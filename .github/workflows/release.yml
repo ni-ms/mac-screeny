@@ -1,0 +1,66 @@
+name: Build and release screeny
+
+on:
+  push:
+    branches: ['**']
+    tags: ['v[0-9]*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build universal macOS app
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Build, verify, and package
+        shell: zsh {0}
+        env:
+          SCREENY_BUILD_VERSION: ${{ github.run_number }}
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+            export SCREENY_VERSION="${GITHUB_REF_NAME#v}"
+          fi
+          ./release.sh
+      - name: Upload app and checksum
+        uses: actions/upload-artifact@v7
+        with:
+          name: screeny-macos-universal
+          path: |
+            build/screeny-macos-universal.zip
+            build/screeny-macos-universal.zip.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
+  release:
+    name: Publish GitHub Release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Download verified build
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --name screeny-macos-universal --dir release
+      - name: Publish release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd release
+          sha256sum --check screeny-macos-universal.zip.sha256
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber screeny-macos-universal.zip screeny-macos-universal.zip.sha256
+          else
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag --title "screeny $GITHUB_REF_NAME" --generate-notes screeny-macos-universal.zip screeny-macos-universal.zip.sha256
+          fi
